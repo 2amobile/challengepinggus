@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Inscription - Challenge des Pinggus V5</title>
+    <title>Inscription - Challenge des Pinggus V6</title>
     <!-- Importation des polices depuis Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,7 +28,7 @@
         
         const app = initializeApp(firebaseConfig);
         let db, auth;
-        let allRegistrations = []; // Pour l'export CSV
+        let allRegistrations = []; // Pour l'export CSV et les stats
         let allWaitlist = []; // Pour l'export CSV
 
         // --- CONSTANTES ---
@@ -50,7 +50,6 @@
         const ycf88DispoEl = document.getElementById('ycf88-dispo');
         const form = document.getElementById('registrationForm');
         const submitBtn = document.querySelector('.submit-btn');
-        // ... (autres éléments du DOM)
         const rentalRadios = document.querySelectorAll('input[name="own-moto"]');
         const tailleInput = document.getElementById('pilote-taille');
         const rentalSection = document.getElementById('rental-section');
@@ -71,12 +70,20 @@
         const termsCheckbox = document.getElementById('terms-checkbox');
         const formOverlay = document.getElementById('form-overlay');
         const promoteBtnContainer = document.getElementById('promote-btn-container');
-
-        // Admin-specific elements
+        
+        // Éléments du DOM spécifiques à l'admin
         const placesTotalInput = document.getElementById('places-total-input');
         const ycf50TotalInput = document.getElementById('ycf50-total-input');
         const ycf88TotalInput = document.getElementById('ycf88-total-input');
         const updateQuantitiesBtn = document.getElementById('update-quantities-btn');
+        const faqAdminForm = document.getElementById('faq-admin-form');
+        const faqIdInput = document.getElementById('faq-id-input');
+        const faqQuestionInput = document.getElementById('faq-question-input');
+        const faqAnswerInput = document.getElementById('faq-answer-input');
+        const faqSubmitBtn = document.getElementById('faq-submit-btn');
+        const faqCancelBtn = document.getElementById('faq-cancel-btn');
+        const faqListAdmin = document.getElementById('faq-list-admin');
+        const faqListPublic = document.getElementById('faq-list-public');
 
         let currentStatus = { places_restantes: 0, ycf_50_dispo: 0, ycf_88_dispo: 0 };
 
@@ -130,7 +137,6 @@
             if (placesTotalInput) placesTotalInput.value = statusData.places_initiales || 36;
             if (ycf50TotalInput) ycf50TotalInput.value = statusData.ycf_50_initial || 3;
             if (ycf88TotalInput) ycf88TotalInput.value = statusData.ycf_88_initial || 20;
-
 
             const setStatusColor = (el, value) => {
                 el.parentElement.classList.remove('status-low', 'status-out');
@@ -201,7 +207,7 @@
                     const input = form.elements[key];
                     if (input) {
                          if (input.type === 'checkbox') {
-                            input.checked = data[key];
+                            input.checked = data[key] === 'on';
                         } else if (input.type === 'radio') {
                             const radioToSelect = document.querySelector(`input[name="${key}"][value="${data[key]}"]`);
                             if(radioToSelect) radioToSelect.checked = true;
@@ -214,6 +220,28 @@
         }
         
         // --- FONCTIONS ADMIN ---
+        function updateDashboardStats(registrations) {
+            let totalRevenue = 0;
+            let ycf50Rentals = 0;
+            let ycf88Rentals = 0;
+
+            registrations.forEach(reg => {
+                totalRevenue += ENGAGEMENT_PRICE;
+                if (reg['own-moto'] === 'non') {
+                    totalRevenue += RENTAL_PRICE;
+                    if (parseInt(reg['pilote-taille'], 10) < 120) {
+                        ycf50Rentals++;
+                    } else {
+                        ycf88Rentals++;
+                    }
+                }
+            });
+
+            document.getElementById('total-revenue').textContent = `${totalRevenue.toFixed(2)}€`;
+            document.getElementById('ycf50-rentals').textContent = ycf50Rentals;
+            document.getElementById('ycf88-rentals').textContent = ycf88Rentals;
+        }
+
         function updateLevelChart(registrations) {
             const levelCounts = { debutant: 0, intermediaire: 0, expert: 0 };
             registrations.forEach(reg => {
@@ -240,13 +268,14 @@
                 snapshot.forEach(doc => {
                     const data = doc.data();
                     dataArray.push(data);
+                    const licenceInfo = data['licence-num'] ? `Licence: ${data['licence-num']}` : `<span class="warning">Licence à vérifier</span>`;
                     const entry = document.createElement('div');
                     entry.className = 'list-item';
                     entry.innerHTML = `
                         <div class="item-info">
                             <strong>${data['pilote-prenom']} ${data['pilote-nom']}</strong> (${data['pilote-age']} ans, ${data['pilote-taille']}cm) - ${data.niveau}<br>
                             Parent: ${data['parent-prenom']} ${data['parent-nom']} (${data['parent-email']} / ${data['parent-tel']})<br>
-                            Location: ${data['own-moto'] === 'non' ? 'Oui' : 'Non'}
+                            Location: ${data['own-moto'] === 'non' ? 'Oui' : 'Non'} | ${licenceInfo}
                         </div>
                         <button class="delete-btn" data-id="${doc.id}" data-is-waitlist="${isWaitlist}" data-moto="${data['own-moto']}" data-taille="${data['pilote-taille']}">Supprimer</button>
                     `;
@@ -261,6 +290,7 @@
             } else {
                 allRegistrations = dataArray;
                 updateLevelChart(allRegistrations);
+                updateDashboardStats(allRegistrations);
             }
 
             const hasWaitlist = parseInt(waitlistCountEl.textContent, 10) > 0;
@@ -436,6 +466,102 @@
             }
         }
 
+        function displayPublicFaqs(faqs) {
+            faqListPublic.innerHTML = '';
+            if (faqs.length === 0) {
+                faqListPublic.innerHTML = '<p>Aucune question pour le moment.</p>';
+                return;
+            }
+            faqs.forEach(faq => {
+                const details = document.createElement('details');
+                details.innerHTML = `
+                    <summary>${faq.question}</summary>
+                    <div><p>${faq.answer.replace(/\n/g, '<br>')}</p></div>
+                `;
+                faqListPublic.appendChild(details);
+            });
+        }
+
+        function displayAdminFaqs(faqs) {
+            faqListAdmin.innerHTML = '';
+             if (faqs.length === 0) {
+                faqListAdmin.innerHTML = `<p class="empty-list-msg">Aucune FAQ. Ajoutez-en une !</p>`;
+                return;
+            }
+            faqs.forEach(faq => {
+                const entry = document.createElement('div');
+                entry.className = 'list-item';
+                entry.innerHTML = `
+                    <div class="item-info">
+                        <strong>${faq.question}</strong><br>
+                        <small>${faq.answer.replace(/\n/g, '<br>')}</small>
+                    </div>
+                    <div class="faq-buttons">
+                        <button class="edit-btn" data-id="${faq.id}">Modifier</button>
+                        <button class="delete-btn" data-id="${faq.id}" data-is-faq="true">Supprimer</button>
+                    </div>
+                `;
+                faqListAdmin.appendChild(entry);
+            });
+        }
+        
+        async function handleFaqSubmit(e) {
+            e.preventDefault();
+            const id = faqIdInput.value;
+            const question = faqQuestionInput.value.trim();
+            const answer = faqAnswerInput.value.trim();
+
+            if (!question || !answer) {
+                alert("La question et la réponse ne peuvent pas être vides.");
+                return;
+            }
+
+            faqSubmitBtn.disabled = true;
+            try {
+                if (id) { // Update
+                    await updateDoc(doc(db, "faqs", id), { question, answer });
+                } else { // Add new
+                    await addDoc(collection(db, "faqs"), { question, answer, createdAt: serverTimestamp() });
+                }
+                resetFaqForm();
+            } catch (err) {
+                console.error("Erreur FAQ:", err);
+                alert("Échec de l'opération.");
+            } finally {
+                faqSubmitBtn.disabled = false;
+            }
+        }
+
+        function handleFaqListClick(e) {
+            const target = e.target;
+            const id = target.dataset.id;
+            
+            if (target.classList.contains('delete-btn') && target.dataset.isFaq) {
+                if (confirm("Voulez-vous vraiment supprimer cette question ?")) {
+                    deleteDoc(doc(db, "faqs", id));
+                }
+            } else if (target.classList.contains('edit-btn')) {
+                const item = target.closest('.list-item');
+                const question = item.querySelector('strong').textContent;
+                const answer = item.querySelector('small').innerHTML.replace(/<br>/g, '\n');
+                
+                faqIdInput.value = id;
+                faqQuestionInput.value = question;
+                faqAnswerInput.value = answer;
+                faqSubmitBtn.textContent = "Mettre à jour la question";
+                faqCancelBtn.classList.remove('hidden');
+            }
+        }
+
+        function resetFaqForm() {
+            faqIdInput.value = '';
+            faqQuestionInput.value = '';
+            faqAnswerInput.value = '';
+            faqSubmitBtn.textContent = "Ajouter la Question";
+            faqCancelBtn.classList.add('hidden');
+        }
+
+
         // --- EXECUTION PRINCIPALE ---
         try {
             db = getFirestore(app);
@@ -451,6 +577,10 @@
                 updateQuantitiesBtn.addEventListener('click', updateQuantities);
                 document.getElementById('export-registrations-btn').addEventListener('click', () => exportToCsv('inscrits.csv', allRegistrations));
                 document.getElementById('export-waitlist-btn').addEventListener('click', () => exportToCsv('liste_attente.csv', allWaitlist));
+                faqAdminForm.addEventListener('submit', handleFaqSubmit);
+                faqListAdmin.addEventListener('click', handleFaqListClick);
+                faqCancelBtn.addEventListener('click', resetFaqForm);
+
             } else {
                  loadFormFromLocalStorage();
                  form.addEventListener('input', () => {
@@ -458,6 +588,14 @@
                      updateSubmitButtonState();
                  });
             }
+            
+            const faqQuery = query(collection(db, "faqs"), orderBy("createdAt"));
+            onSnapshot(faqQuery, (snapshot) => {
+                const faqs = [];
+                snapshot.forEach(doc => faqs.push({ id: doc.id, ...doc.data() }));
+                displayPublicFaqs(faqs);
+                if(isAdmin) displayAdminFaqs(faqs);
+            });
 
             auth.onAuthStateChanged(async (user) => {
                 if (user) {
@@ -568,6 +706,7 @@
             --dark-text: #333;
             --success-green: #2ecc71;
             --error-red: #e74c3c;
+            --warning-orange: #f39c12;
         }
 
         body {
@@ -609,7 +748,7 @@
         .status-panel { display: flex; justify-content: space-around; background-color: var(--primary-blue); color: white; padding: 15px; border-radius: 8px; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
         .status-item { font-size: 1.1rem; text-align: center; }
         .status-item span { font-family: 'Bangers', cursive; font-size: 2.5rem; display: block; color: var(--primary-yellow); transition: color 0.3s; }
-        .status-item.status-low span { color: #f39c12; }
+        .status-item.status-low span { color: var(--warning-orange); }
         .status-item.status-out span { color: var(--error-red); }
 
         fieldset { border: 2px solid #e0e0e0; border-radius: 8px; margin-bottom: 25px; padding: 20px; }
@@ -619,9 +758,9 @@
         .form-group { flex: 1; min-width: 250px; margin-bottom: 15px; position: relative; padding-bottom: 18px; }
         .form-group label { display: block; font-weight: bold; margin-bottom: 5px; }
         
-        input[type="text"], input[type="number"], input[type="email"], input[type="tel"] { width: 100%; padding: 12px; border-radius: 5px; border: 2px solid #ccc; box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s; font-size: 1rem; }
-        input:focus { border-color: var(--primary-blue); outline: none; box-shadow: 0 0 5px rgba(0, 86, 166, 0.5); }
-        input.invalid { border-color: var(--error-red); }
+        input[type="text"], input[type="number"], input[type="email"], input[type="tel"], textarea { width: 100%; padding: 12px; border-radius: 5px; border: 2px solid #ccc; box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s; font-size: 1rem; }
+        input:focus, textarea:focus { border-color: var(--primary-blue); outline: none; box-shadow: 0 0 5px rgba(0, 86, 166, 0.5); }
+        input:invalid, textarea:invalid { border-color: var(--error-red); }
 
         .error-message { color: var(--error-red); font-size: 0.8rem; position: absolute; bottom: 0; left: 0; display: none; }
         .radio-group label { margin-right: 20px; font-weight: normal; cursor: pointer; }
@@ -676,6 +815,36 @@
              border-bottom: 2px solid #eee;
              padding-bottom: 10px;
         }
+        .admin-section h4 {
+            font-family: 'Bangers', cursive;
+            font-size: 1.5rem;
+            color: #555;
+        }
+
+        .dashboard-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #eee;
+        }
+        .stat-card h4 {
+            margin: 0 0 10px;
+            font-size: 1.1rem;
+            color: #555;
+        }
+        .stat-card p {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary-blue);
+            margin: 0;
+        }
 
         .chart-container {
             margin-bottom: 20px;
@@ -685,6 +854,7 @@
             justify-content: center;
             gap: 15px;
             margin-bottom: 10px;
+            flex-wrap: wrap;
         }
         .legend-item {
             display: flex;
@@ -716,14 +886,15 @@
         }
         
         .list-container { max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
-        .list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+        .list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; font-size: 0.9rem; flex-wrap: wrap; gap: 10px; }
         .list-item:last-child { border-bottom: none; }
-        .delete-btn, #promote-btn, #reset-event-btn, .csv-btn, #update-quantities-btn { color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; transition: background-color 0.3s; padding: 10px 15px; }
+        .item-info .warning { color: var(--warning-orange); font-weight: bold; }
+        .delete-btn, #promote-btn, #reset-event-btn, .csv-btn, #update-quantities-btn, .edit-btn { color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; transition: background-color 0.3s; padding: 10px 15px; }
         .delete-btn { background-color: var(--error-red); padding: 5px 10px; font-size: 0.8rem; }
         #promote-btn { background-color: var(--success-green); font-size: 1rem; display: block; margin: 0 auto 20px; }
         #promote-btn:disabled, #update-quantities-btn:disabled { background-color: #999; }
         #reset-event-btn { display: block; margin: 20px auto; background-color: var(--error-red); }
-        #reset-event-btn.confirm-needed { background-color: #f39c12; }
+        #reset-event-btn.confirm-needed { background-color: var(--warning-orange); }
         .csv-btn { background-color: #3498db; margin-right: 10px;}
         .export-buttons { margin-bottom: 20px; }
         .empty-list-msg { color: #888; text-align: center; padding: 20px; }
@@ -735,13 +906,19 @@
             align-items: center;
         }
         .quantities-form label { font-weight: bold; }
-        .quantities-form input { padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 100%; box-sizing: border-box; }
+        .quantities-form input, .quantities-form textarea { padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 100%; box-sizing: border-box; }
         #update-quantities-btn { background-color: var(--primary-blue); grid-column: 1 / -1; }
         
+        #faq-admin-form button { font-size: 1rem; }
+        #faq-cancel-btn { background-color: #7f8c8d; }
+        .faq-buttons { display: flex; gap: 5px; }
+        .edit-btn { background-color: var(--warning-orange); padding: 5px 10px; font-size: 0.8rem; }
+
+
         .faq-section { margin-top: 30px; }
-        .faq-section details { border: 1px solid #ddd; border-radius: 5px; margin-bottom: 10px; }
-        .faq-section summary { padding: 15px; font-weight: bold; cursor: pointer; background-color: #f9f9f9; }
-        .faq-section div { padding: 15px; border-top: 1px solid #ddd; }
+        #faq-list-public details { border: 1px solid #ddd; border-radius: 5px; margin-bottom: 10px; }
+        #faq-list-public summary { padding: 15px; font-weight: bold; cursor: pointer; background-color: #f9f9f9; }
+        #faq-list-public div { padding: 15px; border-top: 1px solid #ddd; }
     </style>
 </head>
 <body>
@@ -861,7 +1038,7 @@
                     <p class="total">Total à Payer : <span id="total-price-display">...</span></p>
                 </div>
                 <div class="terms-group">
-                    <input type="checkbox" id="terms-checkbox" required>
+                    <input type="checkbox" id="terms-checkbox" name="terms" required>
                     <label for="terms-checkbox">J'accepte les termes et conditions de l'événement.</label>
                 </div>
                 <div id="waitlist-message" class="info-text waitlist-info hidden">
@@ -875,14 +1052,10 @@
         </form>
 
         <section class="faq-section">
-            <details>
-                <summary>Questions Fréquentes</summary>
-                <div>
-                    <p><strong>Quels sont les horaires ?</strong><br>Accueil des pilotes à 8h30. Début du roulage à 9h00. Fin de la journée à 17h00.</p>
-                    <p><strong>L'équipement est-il fourni avec la location ?</strong><br>Oui, la location inclut la moto, un casque, des gants et une protection dorsale.</p>
-                    <p><strong>Mon enfant n'a jamais fait de moto, peut-il participer ?</strong><br>Oui ! Le groupe "Débutant" est spécialement conçu pour une initiation en toute sécurité avec nos moniteurs diplômés.</p>
-                </div>
-            </details>
+            <h3>Questions Fréquentes</h3>
+            <div id="faq-list-public">
+                <!-- Les FAQs seront chargées ici par JavaScript -->
+            </div>
         </section>
 
     </div>
@@ -902,6 +1075,20 @@
         
         <section class="admin-section">
             <h3>Tableau de Bord</h3>
+            <div class="dashboard-stats">
+                <div class="stat-card">
+                    <h4>Revenu Total</h4>
+                    <p id="total-revenue">0.00€</p>
+                </div>
+                <div class="stat-card">
+                    <h4>Locations YCF 50</h4>
+                    <p id="ycf50-rentals">0</p>
+                </div>
+                <div class="stat-card">
+                    <h4>Locations YCF 88</h4>
+                    <p id="ycf88-rentals">0</p>
+                </div>
+            </div>
             <div class="chart-container">
                 <p><strong>Répartition par niveau :</strong></p>
                 <div class="chart-legend">
@@ -953,6 +1140,27 @@
             </div>
             <button id="reset-event-btn">Réinitialiser l'événement</button>
         </section>
+
+        <section class="admin-section">
+            <h3>Gestion de la FAQ</h3>
+             <form id="faq-admin-form" class="quantities-form">
+                <input type="hidden" id="faq-id-input">
+                <div style="grid-column: 1 / -1;">
+                    <label for="faq-question-input">Question</label>
+                    <textarea id="faq-question-input" rows="2" required></textarea>
+                </div>
+                <div style="grid-column: 1 / -1;">
+                    <label for="faq-answer-input">Réponse</label>
+                    <textarea id="faq-answer-input" rows="4" required></textarea>
+                </div>
+                <button type="submit" id="faq-submit-btn">Ajouter la Question</button>
+                <button type="button" id="faq-cancel-btn" class="hidden" style="background-color: #7f8c8d;">Annuler l'édition</button>
+            </form>
+            <h4>Questions existantes</h4>
+            <div id="faq-list-admin" class="list-container"></div>
+        </section>
+
     </div>
 </body>
 </html>
+
