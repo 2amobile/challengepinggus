@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inscription - Challenge des Pinggus V5</title>
+    <!-- Importation des polices depuis Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+
+    <!-- Firebase -->
+    <script type="module">
+        // Importations nécessaires pour Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, runTransaction, collection, addDoc, serverTimestamp, setDoc, getDocs, writeBatch, deleteDoc, query, orderBy, limit, updateDoc } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+        
+        // --- CONFIGURATION ---
+        const firebaseConfig = {
+           apiKey: "AIzaSyChyDeM3amGia9s5jlylRrkk_RD2FxwORk",
+           authDomain: "inscriptions-challenge-pinggus.firebaseapp.com",
+           projectId: "inscriptions-challenge-pinggus",
+           storageBucket: "inscriptions-challenge-pinggus.appspot.com",
+           messagingSenderId: "411320991870",
+           appId: "1:411320991870:web:72312acff5347ecbd0582f"
+        };
+        
+        const app = initializeApp(firebaseConfig);
+        let db, auth;
+        let allRegistrations = []; // Pour l'export CSV
+        let allWaitlist = []; // Pour l'export CSV
+
+        // --- CONSTANTES ---
+        const ENGAGEMENT_PRICE = 50.00;
+        const RENTAL_PRICE = 70.00;
+        const INITIAL_STATUS = {
+            places_initiales: 36,
+            places_restantes: 36,
+            ycf_50_initial: 3,
+            ycf_50_dispo: 3,
+            ycf_88_initial: 20,
+            ycf_88_dispo: 20
+        };
+        const FORM_STORAGE_KEY = `form_data_challenge_pinggus`;
+
+        // --- ELEMENTS DU DOM ---
+        const placesRestantesEl = document.getElementById('places-restantes');
+        const ycf50DispoEl = document.getElementById('ycf50-dispo');
+        const ycf88DispoEl = document.getElementById('ycf88-dispo');
+        const form = document.getElementById('registrationForm');
+        const submitBtn = document.querySelector('.submit-btn');
+        // ... (autres éléments du DOM)
+        const rentalRadios = document.querySelectorAll('input[name="own-moto"]');
+        const tailleInput = document.getElementById('pilote-taille');
+        const rentalSection = document.getElementById('rental-section');
+        const rentalMotoInfo = document.getElementById('rental-moto-info');
+        const modal = document.getElementById('confirmationModal');
+        const modalMessage = document.querySelector('#confirmationModal p');
+        const modalTitle = document.querySelector('#confirmationModal h2');
+        const closeModal = document.getElementById('closeModal');
+        const rentalPriceLineEl = document.getElementById('rental-price-line');
+        const totalPriceDisplayEl = document.getElementById('total-price-display');
+        const waitlistMessageEl = document.getElementById('waitlist-message');
+        const adminPanel = document.getElementById('admin-panel');
+        const resetEventBtn = document.getElementById('reset-event-btn');
+        const registrationsListEl = document.getElementById('registrations-list');
+        const waitlistListEl = document.getElementById('waitlist-list');
+        const registrationsCountEl = document.getElementById('registrations-count');
+        const waitlistCountEl = document.getElementById('waitlist-count');
+        const termsCheckbox = document.getElementById('terms-checkbox');
+        const formOverlay = document.getElementById('form-overlay');
+        const promoteBtnContainer = document.getElementById('promote-btn-container');
+
+        // Admin-specific elements
+        const placesTotalInput = document.getElementById('places-total-input');
+        const ycf50TotalInput = document.getElementById('ycf50-total-input');
+        const ycf88TotalInput = document.getElementById('ycf88-total-input');
+        const updateQuantitiesBtn = document.getElementById('update-quantities-btn');
+
+        let currentStatus = { places_restantes: 0, ycf_50_dispo: 0, ycf_88_dispo: 0 };
+
+        // --- FONCTIONS ---
+        
+        async function initializeEventStatusIfNeeded() {
+            const statusRef = doc(db, "management", "event_status");
+             try {
+                await runTransaction(db, async (transaction) => {
+                    const statusDoc = await transaction.get(statusRef);
+                    if (!statusDoc.exists()) {
+                         transaction.set(statusRef, INITIAL_STATUS);
+                        console.log("Statut de l'événement initialisé.");
+                    }
+                });
+            } catch (e) { console.error("Échec de l'initialisation du statut de l'événement:", e); }
+        }
+
+        function updateSubmitButtonState() {
+            const isFormValid = form.checkValidity();
+            const needsRental = document.querySelector('input[name="own-moto"]:checked')?.value === 'non';
+            let canRent = true;
+            if (needsRental) {
+                const taille = parseInt(tailleInput.value, 10);
+                if (taille > 0) {
+                    if (taille < 120 && currentStatus.ycf_50_dispo <= 0) canRent = false;
+                    if (taille >= 120 && currentStatus.ycf_88_dispo <= 0) canRent = false;
+                }
+            }
+            submitBtn.disabled = !isFormValid || !termsCheckbox.checked || !canRent;
+        }
+
+        function updateTotalPrice() {
+            const needsRental = document.querySelector('input[name="own-moto"]:checked')?.value === 'non';
+            let total = ENGAGEMENT_PRICE;
+            if (needsRental) {
+                total += RENTAL_PRICE;
+                rentalPriceLineEl.classList.remove('hidden');
+            } else {
+                rentalPriceLineEl.classList.add('hidden');
+            }
+            totalPriceDisplayEl.textContent = total.toFixed(2) + '€';
+        }
+
+        function updateUI(statusData) {
+            currentStatus = statusData;
+            placesRestantesEl.textContent = statusData.places_restantes;
+            ycf50DispoEl.textContent = statusData.ycf_50_dispo;
+            ycf88DispoEl.textContent = statusData.ycf_88_dispo;
+            
+            if (placesTotalInput) placesTotalInput.value = statusData.places_initiales || 36;
+            if (ycf50TotalInput) ycf50TotalInput.value = statusData.ycf_50_initial || 3;
+            if (ycf88TotalInput) ycf88TotalInput.value = statusData.ycf_88_initial || 20;
+
+
+            const setStatusColor = (el, value) => {
+                el.parentElement.classList.remove('status-low', 'status-out');
+                if (value <= 0) el.parentElement.classList.add('status-out');
+                else if (value <= 5) el.parentElement.classList.add('status-low');
+            };
+            setStatusColor(placesRestantesEl, statusData.places_restantes);
+            setStatusColor(ycf50DispoEl, statusData.ycf_50_dispo);
+            setStatusColor(ycf88DispoEl, statusData.ycf_88_dispo);
+            
+            if (statusData.places_restantes <= 0) {
+                submitBtn.querySelector('span').textContent = "S'inscrire sur la liste d'attente";
+                waitlistMessageEl.classList.remove('hidden');
+            } else {
+                submitBtn.querySelector('span').textContent = "S'inscrire et Payer";
+                waitlistMessageEl.classList.add('hidden');
+            }
+            updateMotoRental();
+        }
+        
+        function updateMotoRental() {
+            const taille = parseInt(tailleInput.value, 10);
+            const needsRental = document.querySelector('input[name="own-moto"]:checked')?.value === 'non';
+
+            if (needsRental) {
+                rentalSection.classList.remove('hidden');
+                let recommendation = "";
+                if (taille > 0) {
+                    if (taille < 120) {
+                        recommendation = "Moto recommandée : YCF 50";
+                        if (currentStatus.ycf_50_dispo <= 0) {
+                            recommendation += " (INDISPONIBLE)";
+                        }
+                    } else {
+                        recommendation = "Moto recommandée : YCF 88";
+                         if (currentStatus.ycf_88_dispo <= 0) {
+                            recommendation += " (INDISPONIBLE)";
+                        }
+                    }
+                } else {
+                    recommendation = "Veuillez renseigner la taille du pilote.";
+                }
+                rentalMotoInfo.textContent = recommendation;
+            } else {
+                rentalSection.classList.add('hidden');
+            }
+            updateTotalPrice();
+            updateSubmitButtonState();
+        }
+
+        function showModal(title, message) {
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+            modal.style.display = 'flex';
+        }
+
+        function saveFormToLocalStorage() {
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+            localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function loadFormFromLocalStorage() {
+            const savedData = localStorage.getItem(FORM_STORAGE_KEY);
+            if(savedData) {
+                const data = JSON.parse(savedData);
+                for (const key in data) {
+                    const input = form.elements[key];
+                    if (input) {
+                         if (input.type === 'checkbox') {
+                            input.checked = data[key];
+                        } else if (input.type === 'radio') {
+                            const radioToSelect = document.querySelector(`input[name="${key}"][value="${data[key]}"]`);
+                            if(radioToSelect) radioToSelect.checked = true;
+                        } else {
+                           input.value = data[key];
+                        }
+                    }
+                }
+            }
+        }
+        
+        // --- FONCTIONS ADMIN ---
+        function updateLevelChart(registrations) {
+            const levelCounts = { debutant: 0, intermediaire: 0, expert: 0 };
+            registrations.forEach(reg => {
+                if (levelCounts.hasOwnProperty(reg.niveau)) {
+                    levelCounts[reg.niveau]++;
+                }
+            });
+            const total = registrations.length || 1;
+            document.getElementById('bar-debutant').style.width = `${(levelCounts.debutant / total) * 100}%`;
+            document.getElementById('bar-debutant').textContent = levelCounts.debutant;
+            document.getElementById('bar-intermediaire').style.width = `${(levelCounts.intermediaire / total) * 100}%`;
+            document.getElementById('bar-intermediaire').textContent = levelCounts.intermediaire;
+            document.getElementById('bar-expert').style.width = `${(levelCounts.expert / total) * 100}%`;
+            document.getElementById('bar-expert').textContent = levelCounts.expert;
+        }
+
+        function displayList(snapshot, element, countElement, isWaitlist = false) {
+            const dataArray = [];
+            element.innerHTML = '';
+            let count = 0;
+             if (snapshot.empty) {
+                element.innerHTML = `<p class="empty-list-msg">${isWaitlist ? 'La liste d\'attente est vide.' : 'Aucune inscription pour le moment.'}</p>`;
+            } else {
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    dataArray.push(data);
+                    const entry = document.createElement('div');
+                    entry.className = 'list-item';
+                    entry.innerHTML = `
+                        <div class="item-info">
+                            <strong>${data['pilote-prenom']} ${data['pilote-nom']}</strong> (${data['pilote-age']} ans, ${data['pilote-taille']}cm) - ${data.niveau}<br>
+                            Parent: ${data['parent-prenom']} ${data['parent-nom']} (${data['parent-email']} / ${data['parent-tel']})<br>
+                            Location: ${data['own-moto'] === 'non' ? 'Oui' : 'Non'}
+                        </div>
+                        <button class="delete-btn" data-id="${doc.id}" data-is-waitlist="${isWaitlist}" data-moto="${data['own-moto']}" data-taille="${data['pilote-taille']}">Supprimer</button>
+                    `;
+                    element.appendChild(entry);
+                    count++;
+                });
+            }
+            countElement.textContent = count;
+            
+            if (isWaitlist) {
+                allWaitlist = dataArray;
+            } else {
+                allRegistrations = dataArray;
+                updateLevelChart(allRegistrations);
+            }
+
+            const hasWaitlist = parseInt(waitlistCountEl.textContent, 10) > 0;
+            const hasSpace = currentStatus.places_restantes > 0;
+            promoteBtnContainer.classList.toggle('hidden', !(hasWaitlist && hasSpace));
+        }
+
+        async function handleDelete(e) { 
+            if (!e.target.classList.contains('delete-btn')) return;
+            const { id, isWaitlist, moto, taille } = e.target.dataset;
+            const isWaitlistBool = isWaitlist === 'true';
+
+            if (!confirm(`Voulez-vous vraiment supprimer cette inscription ${isWaitlistBool ? 'de la liste d\'attente' : ''} ?`)) return;
+
+            try {
+                if (isWaitlistBool) {
+                    await deleteDoc(doc(db, "waitlist", id));
+                } else {
+                    await runTransaction(db, async (transaction) => {
+                        const statusRef = doc(db, "management", "event_status");
+                        const statusDoc = await transaction.get(statusRef);
+                        if (!statusDoc.exists()) throw new Error("Document de statut non trouvé");
+
+                        const newStatus = { ...statusDoc.data() };
+                        newStatus.places_restantes++;
+                        if (moto === 'non') {
+                           parseInt(taille, 10) < 120 ? newStatus.ycf_50_dispo++ : newStatus.ycf_88_dispo++;
+                        }
+                        transaction.update(statusRef, newStatus);
+                        transaction.delete(doc(db, "registrations", id));
+                    });
+                }
+                showModal("Succès", "Inscription supprimée.");
+            } catch (err) {
+                console.error("Erreur lors de la suppression:", err);
+                showModal("Erreur", "La suppression a échoué.");
+            }
+        }
+        async function promoteFirstFromWaitlist() { 
+            const promoteBtn = document.getElementById('promote-btn');
+            promoteBtn.disabled = true;
+            promoteBtn.textContent = "Promotion en cours...";
+
+            const waitlistQuery = query(collection(db, "waitlist"), orderBy("createdAt"), limit(1));
+
+            try {
+                const waitlistSnapshot = await getDocs(waitlistQuery);
+                if (waitlistSnapshot.empty) throw new Error("La liste d'attente est vide.");
+
+                const userToPromoteDoc = waitlistSnapshot.docs[0];
+                const userData = userToPromoteDoc.data();
+
+                await runTransaction(db, async (transaction) => {
+                    const statusRef = doc(db, "management", "event_status");
+                    const statusDoc = await transaction.get(statusRef);
+                    if (!statusDoc.exists() || statusDoc.data().places_restantes <= 0) throw new Error("Aucune place disponible.");
+
+                    const newStatus = { ...statusDoc.data() };
+                    newStatus.places_restantes--;
+                    transaction.update(statusRef, newStatus);
+                    transaction.set(doc(collection(db, "registrations")), userData);
+                    transaction.delete(userToPromoteDoc.ref);
+                });
+                
+                showModal("Succès", `${userData['pilote-prenom']} ${userData['pilote-nom']} a été promu(e) !`);
+
+            } catch(err) {
+                 console.error("Erreur lors de la promotion:", err);
+                 showModal("Erreur", "La promotion a échoué. " + err.message);
+            } finally {
+                promoteBtn.disabled = false;
+                promoteBtn.textContent = "Promouvoir le Prochain";
+            }
+        }
+        
+        async function updateQuantities() {
+            updateQuantitiesBtn.disabled = true;
+            updateQuantitiesBtn.textContent = "Mise à jour...";
+            
+            const newPlacesTotal = parseInt(placesTotalInput.value, 10);
+            const newYcf50Total = parseInt(ycf50TotalInput.value, 10);
+            const newYcf88Total = parseInt(ycf88TotalInput.value, 10);
+
+            // Recalcul basé sur les inscrits réels pour éviter les erreurs NaN
+            const inscrits = allRegistrations.length;
+            const ycf50Louees = allRegistrations.filter(r => r['own-moto'] === 'non' && parseInt(r['pilote-taille'], 10) < 120).length;
+            const ycf88Louees = allRegistrations.filter(r => r['own-moto'] === 'non' && parseInt(r['pilote-taille'], 10) >= 120).length;
+
+            const statusRef = doc(db, "management", "event_status");
+            try {
+                const newStatus = {
+                    places_initiales: newPlacesTotal,
+                    places_restantes: newPlacesTotal - inscrits,
+                    ycf_50_initial: newYcf50Total,
+                    ycf_50_dispo: newYcf50Total - ycf50Louees,
+                    ycf_88_initial: newYcf88Total,
+                    ycf_88_dispo: newYcf88Total - ycf88Louees
+                };
+                await updateDoc(statusRef, newStatus);
+                showModal("Succès", "Les quantités ont été mises à jour.");
+            } catch (e) {
+                console.error("Erreur de mise à jour des quantités:", e);
+                showModal("Erreur", "La mise à jour a échoué.");
+            } finally {
+                updateQuantitiesBtn.disabled = false;
+                updateQuantitiesBtn.textContent = "Mettre à jour les quantités";
+            }
+        }
+
+        function exportToCsv(filename, rows) {
+            if (rows.length === 0) {
+                alert("Il n'y a aucune donnée à exporter.");
+                return;
+            }
+            const header = Object.keys(rows[0]);
+            const csvContent = [
+                header.join(','),
+                ...rows.map(row => header.map(fieldName => JSON.stringify(row[fieldName])).join(','))
+            ].join('\r\n');
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            if (link.download !== undefined) {
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        }
+        
+        let resetConfirmationTimeout = null;
+        function handleResetClick() {
+            if (resetEventBtn.classList.contains('confirm-needed')) {
+                clearTimeout(resetConfirmationTimeout);
+                resetEvent();
+            } else {
+                resetEventBtn.classList.add('confirm-needed');
+                resetEventBtn.textContent = 'Êtes-vous sûr ? Confirmer';
+                resetConfirmationTimeout = setTimeout(() => {
+                    resetEventBtn.classList.remove('confirm-needed');
+                    resetEventBtn.textContent = "Réinitialiser l'événement";
+                }, 5000);
+            }
+        }
+        async function resetEvent() {
+            resetEventBtn.disabled = true;
+            resetEventBtn.textContent = 'Réinitialisation...';
+            try {
+                const batch = writeBatch(db);
+                const registrationsRef = collection(db, "registrations");
+                const regSnapshot = await getDocs(registrationsRef);
+                regSnapshot.forEach(doc => batch.delete(doc.ref));
+
+                const waitlistRef = collection(db, "waitlist");
+                const waitlistSnapshot = await getDocs(waitlistRef);
+                waitlistSnapshot.forEach(doc => batch.delete(doc.ref));
+
+                const statusRef = doc(db, "management", "event_status");
+                batch.set(statusRef, INITIAL_STATUS);
+
+                await batch.commit();
+                showModal("Succès", "L'événement a été réinitialisé !");
+            } catch (e) {
+                console.error("Erreur de réinitialisation:", e);
+                showModal("Erreur", "La réinitialisation a échoué.");
+            } finally {
+                resetEventBtn.classList.remove('confirm-needed');
+                resetEventBtn.textContent = "Réinitialiser l'événement";
+                resetEventBtn.disabled = false;
+            }
+        }
+
+        // --- EXECUTION PRINCIPALE ---
+        try {
+            db = getFirestore(app);
+            auth = getAuth(app);
+            const isAdmin = new URLSearchParams(window.location.search).get('admin') === 'true';
+
+            if (isAdmin) {
+                document.body.classList.add('admin-view');
+                resetEventBtn.addEventListener('click', handleResetClick);
+                registrationsListEl.addEventListener('click', handleDelete);
+                waitlistListEl.addEventListener('click', handleDelete);
+                document.getElementById('promote-btn').addEventListener('click', promoteFirstFromWaitlist);
+                updateQuantitiesBtn.addEventListener('click', updateQuantities);
+                document.getElementById('export-registrations-btn').addEventListener('click', () => exportToCsv('inscrits.csv', allRegistrations));
+                document.getElementById('export-waitlist-btn').addEventListener('click', () => exportToCsv('liste_attente.csv', allWaitlist));
+            } else {
+                 loadFormFromLocalStorage();
+                 form.addEventListener('input', () => {
+                     saveFormToLocalStorage();
+                     updateSubmitButtonState();
+                 });
+            }
+
+            auth.onAuthStateChanged(async (user) => {
+                if (user) {
+                    await initializeEventStatusIfNeeded();
+                    const statusRef = doc(db, "management", "event_status");
+                    onSnapshot(statusRef, (doc) => { if (doc.exists()) { updateUI(doc.data()); }});
+
+                    if(isAdmin) {
+                        const regQuery = query(collection(db, "registrations"), orderBy("createdAt"));
+                        onSnapshot(regQuery, (snapshot) => displayList(snapshot, registrationsListEl, registrationsCountEl, false));
+
+                        const waitlistQuery = query(collection(db, "waitlist"), orderBy("createdAt"));
+                        onSnapshot(waitlistQuery, (snapshot) => displayList(snapshot, waitlistListEl, waitlistCountEl, true));
+                    }
+                }
+            });
+            
+            await signInAnonymously(auth); 
+
+        } catch (error) { 
+            console.error("Échec de l'initialisation de Firebase:", error);
+            const statusPanel = document.querySelector('.status-panel');
+            if (statusPanel) {
+                statusPanel.innerHTML = "<p style='color: white; text-align: center; width: 100%;'>Erreur de connexion. Vérifiez la configuration Firebase.</p>";
+            }
+        }
+        
+        // --- ECOUTEURS D'EVENEMENTS ---
+        tailleInput.addEventListener('input', updateMotoRental);
+        rentalRadios.forEach(radio => radio.addEventListener('change', updateMotoRental));
+        termsCheckbox.addEventListener('change', updateSubmitButtonState);
+
+        form.addEventListener('submit', async (event) => {
+             event.preventDefault();
+             updateSubmitButtonState();
+             if(submitBtn.disabled) return;
+            
+            formOverlay.classList.add('visible');
+            submitBtn.classList.add('loading');
+
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+            let success = false;
+
+             if (currentStatus.places_restantes <= 0) {
+                const waitlistRef = collection(db, "waitlist");
+                try {
+                    await addDoc(waitlistRef, { ...data, createdAt: serverTimestamp() });
+                    showModal("Ajouté à la liste d'attente", "Vous avez bien été ajouté à la liste d'attente. Nous vous contacterons si une place se libère.");
+                    success = true;
+                } catch(e) { showModal("Erreur", "Une erreur est survenue."); }
+            } else {
+                 const needsRental = data['own-moto'] === 'non';
+                const statusRef = doc(db, "management", "event_status");
+                try {
+                    await runTransaction(db, async (transaction) => {
+                        const statusDoc = await transaction.get(statusRef);
+                        if (!statusDoc.exists()) throw new Error("Doc statut introuvable.");
+                        const statusData = statusDoc.data();
+                        if (statusData.places_restantes <= 0) throw new Error("Événement complet.");
+                        let newStatus = { ...statusData };
+                        newStatus.places_restantes--;
+                        if (needsRental) {
+                            const taille = parseInt(data['pilote-taille'], 10);
+                            if (taille < 120) {
+                                if (newStatus.ycf_50_dispo <= 0) throw new Error("Plus de YCF 50.");
+                                newStatus.ycf_50_dispo--;
+                            } else {
+                                if (newStatus.ycf_88_dispo <= 0) throw new Error("Plus de YCF 88.");
+                                newStatus.ycf_88_dispo--;
+                            }
+                        }
+                        transaction.update(statusRef, newStatus);
+                        transaction.set(doc(collection(db, "registrations")), { ...data, createdAt: serverTimestamp() });
+                    });
+                    showModal("Inscription Réussie !", "Votre inscription est enregistrée !");
+                    success = true;
+                } catch (e) { showModal("Erreur", e.message); }
+            }
+
+            formOverlay.classList.remove('visible');
+            submitBtn.classList.remove('loading');
+            if (success) {
+                form.reset();
+                localStorage.removeItem(FORM_STORAGE_KEY);
+                updateTotalPrice();
+                termsCheckbox.checked = false;
+                submitBtn.disabled = true;
+            }
+        });
+        
+        closeModal.addEventListener('click', () => modal.style.display = 'none');
+        window.addEventListener('click', (event) => {
+            if (event.target == modal) modal.style.display = 'none';
+        });
+
+        updateTotalPrice();
+        updateSubmitButtonState();
+    </script>
+
+
+    <style>
+        :root {
+            --primary-blue: #0056a6;
+            --primary-yellow: #ffdd00;
+            --primary-orange: #ff5500;
+            --light-grey: #f0f4f8;
+            --dark-text: #333;
+            --success-green: #2ecc71;
+            --error-red: #e74c3c;
+        }
+
+        body {
+            font-family: 'Lato', sans-serif;
+            background-color: var(--light-grey); 
+            color: var(--dark-text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        body.admin-view #registration-container { display: none; }
+        body:not(.admin-view) #admin-panel { display: none; }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            border: 5px solid var(--primary-blue);
+            margin: 20px 0;
+            position: relative;
+        }
+        
+        #form-overlay {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(255, 255, 255, 0.7); z-index: 10;
+            display: none; border-radius: 5px;
+        }
+        #form-overlay.visible { display: block; }
+
+        header { text-align: center; margin-bottom: 20px; border-bottom: 5px dotted var(--primary-blue); padding-bottom: 20px; }
+        header h1 { font-family: 'Bangers', cursive; color: var(--primary-blue); font-size: 3rem; margin: 0; text-shadow: 2px 2px var(--primary-yellow), 4px 4px #000; line-height: 1.1; }
+        .event-details { font-size: 1.1rem; font-weight: bold; color: #000; margin-top: 10px; }
+        
+        .status-panel { display: flex; justify-content: space-around; background-color: var(--primary-blue); color: white; padding: 15px; border-radius: 8px; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
+        .status-item { font-size: 1.1rem; text-align: center; }
+        .status-item span { font-family: 'Bangers', cursive; font-size: 2.5rem; display: block; color: var(--primary-yellow); transition: color 0.3s; }
+        .status-item.status-low span { color: #f39c12; }
+        .status-item.status-out span { color: var(--error-red); }
+
+        fieldset { border: 2px solid #e0e0e0; border-radius: 8px; margin-bottom: 25px; padding: 20px; }
+        legend { font-family: 'Bangers', cursive; font-size: 2rem; color: var(--primary-blue); padding: 0 10px; }
+
+        .form-row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .form-group { flex: 1; min-width: 250px; margin-bottom: 15px; position: relative; padding-bottom: 18px; }
+        .form-group label { display: block; font-weight: bold; margin-bottom: 5px; }
+        
+        input[type="text"], input[type="number"], input[type="email"], input[type="tel"] { width: 100%; padding: 12px; border-radius: 5px; border: 2px solid #ccc; box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s; font-size: 1rem; }
+        input:focus { border-color: var(--primary-blue); outline: none; box-shadow: 0 0 5px rgba(0, 86, 166, 0.5); }
+        input.invalid { border-color: var(--error-red); }
+
+        .error-message { color: var(--error-red); font-size: 0.8rem; position: absolute; bottom: 0; left: 0; display: none; }
+        .radio-group label { margin-right: 20px; font-weight: normal; cursor: pointer; }
+        .radio-group input { margin-right: 5px; vertical-align: middle; }
+        
+        .terms-group { display: flex; align-items: center; margin: 20px 0; }
+        #terms-checkbox { margin-right: 10px; }
+        .terms-group label { font-weight: normal; }
+
+        .info-text { font-size: 0.9rem; color: #555; margin-top: 8px; }
+        .info-text a { color: var(--primary-blue); font-weight: bold; }
+        .hidden { display: none; }
+        .waitlist-info { text-align: center; font-weight: bold; color: var(--primary-orange); background-color: #fff3e0; padding: 10px; border-radius: 5px; border: 1px solid var(--primary-orange); margin-bottom: 15px; }
+        #rental-section { background-color: #eef5fc; border: 2px dashed var(--primary-blue); padding: 15px; border-radius: 5px; margin-top: 10px; }
+        .moto-recommendation { font-size: 1.1rem; font-weight: bold; color: var(--primary-blue); text-align: center; }
+        
+        .price-summary { background-color: #f7f7f7; padding: 20px; border-radius: 8px; border: 2px solid #ddd; }
+        .price-summary p { margin: 5px 0; font-size: 1.1rem; display: flex; justify-content: space-between; }
+        .price-summary hr { border: 0; border-top: 1px solid #ccc; }
+        .price-summary .total { font-size: 1.5rem; font-weight: bold; }
+        
+        .submit-btn { display: flex; align-items: center; justify-content: center; width: 100%; padding: 15px; background-color: var(--primary-orange); color: white; font-family: 'Bangers', cursive; font-size: 2rem; border: none; border-radius: 8px; cursor: pointer; margin-top: 20px; transition: all 0.2s; text-shadow: 1px 1px 2px #000; }
+        .submit-btn:hover:not(:disabled) { transform: scale(1.02); background-color: #e64a00; }
+        .submit-btn:disabled { background-color: #999; cursor: not-allowed; transform: none; }
+        .submit-btn .spinner { display: none; width: 24px; height: 24px; border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s ease-in-out infinite; margin-right: 15px; }
+        .submit-btn.loading .spinner { display: block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
+        .modal-content { background-color: #fefefe; padding: 30px; border-radius: 10px; text-align: center; width: 90%; max-width: 500px; }
+        .modal-content h2 { font-family: 'Bangers', cursive; color: var(--primary-blue); }
+        .close-button { background-color: var(--primary-blue); color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-top: 20px; }
+        
+        /* Styles Admin */
+        #admin-panel h2 {
+            font-family: 'Bangers', cursive;
+            color: var(--primary-blue);
+            font-size: 2.5rem;
+            text-align: center;
+        }
+        .admin-section {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            padding: 20px;
+        }
+        .admin-section h3 {
+             font-family: 'Bangers', cursive;
+             font-size: 1.8rem;
+             color: var(--primary-blue);
+             margin-top: 0;
+             border-bottom: 2px solid #eee;
+             padding-bottom: 10px;
+        }
+
+        .chart-container {
+            margin-bottom: 20px;
+        }
+        .chart-legend {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+        .legend-color {
+            width: 15px;
+            height: 15px;
+            margin-right: 5px;
+            border-radius: 3px;
+        }
+        .bar-chart {
+            display: flex;
+            height: 30px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .bar {
+            height: 100%;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: bold;
+            transition: width 0.5s ease-in-out;
+        }
+        
+        .list-container { max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+        .list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+        .list-item:last-child { border-bottom: none; }
+        .delete-btn, #promote-btn, #reset-event-btn, .csv-btn, #update-quantities-btn { color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; transition: background-color 0.3s; padding: 10px 15px; }
+        .delete-btn { background-color: var(--error-red); padding: 5px 10px; font-size: 0.8rem; }
+        #promote-btn { background-color: var(--success-green); font-size: 1rem; display: block; margin: 0 auto 20px; }
+        #promote-btn:disabled, #update-quantities-btn:disabled { background-color: #999; }
+        #reset-event-btn { display: block; margin: 20px auto; background-color: var(--error-red); }
+        #reset-event-btn.confirm-needed { background-color: #f39c12; }
+        .csv-btn { background-color: #3498db; margin-right: 10px;}
+        .export-buttons { margin-bottom: 20px; }
+        .empty-list-msg { color: #888; text-align: center; padding: 20px; }
+
+        .quantities-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            align-items: center;
+        }
+        .quantities-form label { font-weight: bold; }
+        .quantities-form input { padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 100%; box-sizing: border-box; }
+        #update-quantities-btn { background-color: var(--primary-blue); grid-column: 1 / -1; }
+        
+        .faq-section { margin-top: 30px; }
+        .faq-section details { border: 1px solid #ddd; border-radius: 5px; margin-bottom: 10px; }
+        .faq-section summary { padding: 15px; font-weight: bold; cursor: pointer; background-color: #f9f9f9; }
+        .faq-section div { padding: 15px; border-top: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <div class="container" id="registration-container">
+        <div id="form-overlay"></div>
+        <header>
+            <h1>Inscris-toi au Challenge des Pinggus !</h1>
+            <p class="event-details">
+                <strong>Date :</strong> Dimanche 19 Octobre 2025 | <strong>Lieu :</strong> Circuit de Saint-Marcel (71)
+            </p>
+        </header>
+
+        <div class="status-panel">
+            <div class="status-item">
+                <span id="places-restantes">...</span> Places Restantes
+            </div>
+            <div class="status-item">
+                <span id="ycf50-dispo">...</span> YCF 50 Dispo.
+            </div>
+            <div class="status-item">
+                <span id="ycf88-dispo">...</span> YCF 88 Dispo.
+            </div>
+        </div>
+
+        <form id="registrationForm" novalidate>
+            <fieldset>
+                <legend>Informations du Pilote</legend>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="pilote-prenom">Prénom</label>
+                        <input type="text" id="pilote-prenom" name="pilote-prenom" placeholder="Ex: Tom" required>
+                        <div class="error-message"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="pilote-nom">Nom</label>
+                        <input type="text" id="pilote-nom" name="pilote-nom" placeholder="Ex: Dubois" required>
+                        <div class="error-message"></div>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="pilote-age">Âge (entre 6 et 16 ans)</label>
+                        <input type="number" id="pilote-age" name="pilote-age" min="6" max="16" required>
+                        <div class="error-message"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="pilote-taille">Taille (en cm)</label>
+                        <input type="number" id="pilote-taille" name="pilote-taille" placeholder="Ex: 135" required>
+                        <div class="error-message"></div>
+                    </div>
+                </div>
+                 <div class="form-group">
+                    <label>Niveau du pilote</label>
+                    <div class="radio-group">
+                        <label><input type="radio" name="niveau" value="debutant" required> Débutant</label>
+                        <label><input type="radio" name="niveau" value="intermediaire"> Intermédiaire</label>
+                        <label><input type="radio" name="niveau" value="expert"> Expert</label>
+                    </div>
+                    <div class="error-message"></div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Coordonnées du Parent</legend>
+                 <div class="form-row">
+                     <div class="form-group">
+                        <label for="parent-prenom">Prénom</label>
+                        <input type="text" id="parent-prenom" name="parent-prenom" placeholder="Ex: Marie" required>
+                        <div class="error-message"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="parent-nom">Nom</label>
+                        <input type="text" id="parent-nom" name="parent-nom" placeholder="Ex: Dubois" required>
+                        <div class="error-message"></div>
+                    </div>
+                 </div>
+                 <div class="form-row">
+                    <div class="form-group">
+                        <label for="parent-email">Adresse Mail</label>
+                        <input type="email" id="parent-email" name="parent-email" placeholder="Ex: marie.dubois@email.com" required>
+                        <div class="error-message"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="parent-tel">Numéro de Téléphone</label>
+                        <input type="tel" id="parent-tel" name="parent-tel" placeholder="Ex: 0612345678" required pattern="[0-9]{10}">
+                        <div class="error-message"></div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Moto & Licence</legend>
+                <div class="form-group">
+                    <label>Le pilote a-t-il sa propre moto ?</label>
+                    <div class="radio-group">
+                         <label><input type="radio" name="own-moto" value="oui" required> Oui</label>
+                         <label><input type="radio" name="own-moto" value="non"> Non, je souhaite en louer une.</label>
+                    </div>
+                    <div class="error-message"></div>
+                </div>
+                <div id="rental-section" class="hidden">
+                    <p id="rental-moto-info" class="moto-recommendation"></p>
+                </div>
+                 <div class="form-group">
+                    <label for="licence-num">Numéro de Licence FFM (si applicable)</label>
+                    <input type="text" id="licence-num" name="licence-num" placeholder="Laissez vide si non applicable">
+                    <p class="info-text">Un "Pass Circuit" FFM est obligatoire si le pilote n'a pas de licence annuelle. <a href="https://pratiquer.ffmoto.org/pass-circuit" target="_blank">Cliquez ici pour souscrire.</a></p>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Récapitulatif & Paiement</legend>
+                <div class="price-summary">
+                    <p>Engagement : <span>50.00€</span></p>
+                    <p id="rental-price-line" class="hidden">Location Moto + Équipement : <span>70.00€</span></p>
+                    <hr>
+                    <p class="total">Total à Payer : <span id="total-price-display">...</span></p>
+                </div>
+                <div class="terms-group">
+                    <input type="checkbox" id="terms-checkbox" required>
+                    <label for="terms-checkbox">J'accepte les termes et conditions de l'événement.</label>
+                </div>
+                <div id="waitlist-message" class="info-text waitlist-info hidden">
+                    L'événement est complet. En vous inscrivant, vous serez placé sur notre liste d'attente.
+                </div>
+                <button type="submit" class="submit-btn" disabled>
+                    <div class="spinner"></div>
+                    <span>S'inscrire et Payer</span>
+                </button>
+            </fieldset>
+        </form>
+
+        <section class="faq-section">
+            <details>
+                <summary>Questions Fréquentes</summary>
+                <div>
+                    <p><strong>Quels sont les horaires ?</strong><br>Accueil des pilotes à 8h30. Début du roulage à 9h00. Fin de la journée à 17h00.</p>
+                    <p><strong>L'équipement est-il fourni avec la location ?</strong><br>Oui, la location inclut la moto, un casque, des gants et une protection dorsale.</p>
+                    <p><strong>Mon enfant n'a jamais fait de moto, peut-il participer ?</strong><br>Oui ! Le groupe "Débutant" est spécialement conçu pour une initiation en toute sécurité avec nos moniteurs diplômés.</p>
+                </div>
+            </details>
+        </section>
+
+    </div>
+
+    <!-- Modal de confirmation -->
+    <div id="confirmationModal" class="modal">
+      <div class="modal-content">
+        <h2 id="modal-title">...</h2>
+        <p id="modal-message">...</p>
+        <button id="closeModal" class="close-button">Fermer</button>
+      </div>
+    </div>
+    
+    <!-- Panneau d'administration -->
+    <div id="admin-panel" class="container">
+        <h2>Tableau de Bord Admin</h2>
+        
+        <section class="admin-section">
+            <h3>Tableau de Bord</h3>
+            <div class="chart-container">
+                <p><strong>Répartition par niveau :</strong></p>
+                <div class="chart-legend">
+                    <div class="legend-item"><div class="legend-color" style="background-color: #3498db;"></div> Débutant</div>
+                    <div class="legend-item"><div class="legend-color" style="background-color: #f1c40f;"></div> Intermédiaire</div>
+                    <div class="legend-item"><div class="legend-color" style="background-color: #e74c3c;"></div> Expert</div>
+                </div>
+                <div class="bar-chart">
+                    <div id="bar-debutant" class="bar" style="background-color: #3498db;"></div>
+                    <div id="bar-intermediaire" class="bar" style="background-color: #f1c40f;"></div>
+                    <div id="bar-expert" class="bar" style="background-color: #e74c3c;"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="admin-section">
+            <h3>Gestion des Participants</h3>
+            <div class="export-buttons">
+                <button id="export-registrations-btn" class="csv-btn">Exporter les Inscrits (CSV)</button>
+                <button id="export-waitlist-btn" class="csv-btn">Exporter la Liste d'attente (CSV)</button>
+            </div>
+            <div id="promote-btn-container" class="hidden">
+                <button id="promote-btn">Promouvoir le Prochain</button>
+            </div>
+            
+            <h4>Inscriptions Confirmées (<span id="registrations-count">0</span>)</h4>
+            <div id="registrations-list" class="list-container"></div>
+
+            <h4>Liste d'attente (<span id="waitlist-count">0</span>)</h4>
+            <div id="waitlist-list" class="list-container"></div>
+        </section>
+
+        <section class="admin-section">
+            <h3>Configuration de l'Événement</h3>
+            <div class="quantities-form">
+                <div>
+                    <label for="places-total-input">Places totales</label>
+                    <input type="number" id="places-total-input" min="0">
+                </div>
+                <div>
+                    <label for="ycf50-total-input">Stock YCF 50</label>
+                    <input type="number" id="ycf50-total-input" min="0">
+                </div>
+                <div>
+                    <label for="ycf88-total-input">Stock YCF 88</label>
+                    <input type="number" id="ycf88-total-input" min="0">
+                </div>
+                <button id="update-quantities-btn">Mettre à jour les quantités</button>
+            </div>
+            <button id="reset-event-btn">Réinitialiser l'événement</button>
+        </section>
+    </div>
+</body>
+</html>
